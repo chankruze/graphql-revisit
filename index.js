@@ -6,6 +6,7 @@ Copyright (c) geekofia 2022 and beyond
 */
 
 const { ApolloServer, gql } = require('apollo-server');
+const { generateId, cryptPassword, comparePassword, getAge } = require('./utils');
 
 // schema
 // type checking
@@ -16,13 +17,16 @@ const { ApolloServer, gql } = require('apollo-server');
 const typeDefs = gql`
     type Query {
         hello(name: String): String!
-        user: User!
+        user(userInfo: UserInfo): User!
     }
 
     type User {
         id: ID!
         username: String!
+        password: String!
         email: String!
+        dob: String!
+        age: Int
     }
 
     type Error {
@@ -37,50 +41,48 @@ const typeDefs = gql`
 
     input UserInfo {
         username: String!
+        email: String!
         password: String!
-        age: Int
+        dob: String!
     }
 
     type Mutation {
         register(userInfo: UserInfo): Response!
-        login(userInfo: UserInfo): String!
+        login(userInfo: UserInfo): Boolean!
     }
 `;
 
+
 // resolvers
 const resolvers = {
+    User: {
+        age: parent => getAge(parent.dob)
+    },
     Query: {
         hello: (parent, { name }, context, info) => `Hello ${name}!`,
-        user: () => ({
-            id: '1',
-            username: 'chankruze',
-            email: 'chankruze@gmail.com'
+        user: async (parent, { userInfo }, context) => ({
+            ...userInfo,
+            id: generateId(),
+            password: await cryptPassword(userInfo.password),
         })
     },
     Mutation: {
-        // (parent, args, context, info) => {}
-        login: async (parent, { userInfo: { username } }, context, info) => {
-            // console.log(context);
-            // check password
-            // await checkPassword(username, password);
-            // return token
-            return username;
+        login: async (parent, { userInfo: { password } }, context) => {
+            const hashedPass = await cryptPassword(password);
+            return await comparePassword(password, hashedPass);;
         },
-        register: () => ({
-            errors: [{
-                field: "username",
-                message: "bad"
-            },
-            {
-                field: "email",
-                message: "already exists"
-            }],
-            user: {
-                id: '1',
-                username: 'chankruze',
-                email: 'chankruze@gmail.com'
+        register: async (parent, { userInfo }, context) => {
+            const { password } = userInfo;
+            return {
+                errors: [],
+                user: {
+                    ...userInfo,
+                    id: generateId(),
+                    password: await cryptPassword(password),
+                }
             }
-        })
+
+        }
     }
 };
 
@@ -96,3 +98,4 @@ server.listen().then(({ url }) => {
 // Notes:
 // 1. Querries are run parallel
 // 2. Mutations are run serially
+// 3. parameters: (parent, args, context, info) => {}
