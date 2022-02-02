@@ -5,7 +5,15 @@ Created: Wed Feb 02 2022 00:13:13 GMT+0530 (India Standard Time)
 Copyright (c) geekofia 2022 and beyond
 */
 
-const { ApolloServer, gql } = require('apollo-server');
+
+const { ApolloServer } = require('apollo-server-express');
+const { ApolloServerPluginDrainHttpServer } = require('apollo-server-core');
+const { execute, subscribe } = require('graphql');
+const { SubscriptionServer } = require('subscriptions-transport-ws');
+const { makeExecutableSchema } = require('@graphql-tools/schema');
+const gql = require('graphql-tag');
+const express = require('express');
+const http = require('http');
 const { generateId, cryptPassword, comparePassword, getAge } = require('./utils');
 
 // schema
@@ -50,11 +58,23 @@ const typeDefs = gql`
         register(userInfo: UserInfo): Response!
         login(userInfo: UserInfo): Boolean!
     }
+
+    type Subscription {
+        newUser: User!
+    }
 `;
 
+// const NEW_USER = 'NEW_USER';
 
 // resolvers
 const resolvers = {
+    // Subscription: {
+    //     newUser: {
+    //         subscribe: (parent, args, { pubsub }) => {
+    //             return pubsub.asyncIterator(NEW_USER);
+    //         }
+    //     }
+    // },
     User: {
         age: parent => getAge(parent.dob)
     },
@@ -73,26 +93,83 @@ const resolvers = {
         },
         register: async (parent, { userInfo }, context) => {
             const { password } = userInfo;
+            const newUser = {
+                ...userInfo,
+                id: generateId(),
+                password: await cryptPassword(password),
+            }
+
+            // pubsub.pubsub(NEW_USER, { newUser });
+            console.log(context);
+
             return {
                 errors: [],
-                user: {
-                    ...userInfo,
-                    id: generateId(),
-                    password: await cryptPassword(password),
-                }
+                user: newUser
             }
 
         }
     }
 };
 
-const server = new ApolloServer({ typeDefs, resolvers, context: ({ req, res }) => ({ req, res }) });
+(async function startApolloServer(typeDefs, resolvers) {
+    // Required logic for integrating with Express
+    const app = express();
+    const httpServer = http.createServer(app);
+    const schema = makeExecutableSchema({ typeDefs, resolvers });
 
-// start the server: server.listen({port: 4000})
-server.listen().then(({ url }) => {
-    console.log(`🚀 Server ready at ${url}`);
-});
+    // Same ApolloServer initialization as before, plus the drain plugin.
+    const server = new ApolloServer({
+        schema,
+        plugins: [ApolloServerPluginDrainHttpServer({ httpServer }), {
+            async serverWillStart() {
+                return {
+                    async drainServer() {
+                        subscriptionServer.close();
+                    }
+                };
+            }
+        }],
+    });
 
+    const subscriptionServer = SubscriptionServer.create({
+        // This is the `schema` we just created.
+        schema,
+        // These are imported from `graphql`.
+        execute,
+        subscribe,
+        // Providing `onConnect` is the `SubscriptionServer` equivalent to the
+        // `context` function in `ApolloServer`. Please [see the docs](https://github.com/apollographql/subscriptions-transport-ws#constructoroptions-socketoptions--socketserver)
+        // for more information on this hook.
+        async onConnect(
+            connectionParams,
+            webSocket,
+            context
+        ) {
+            // If an object is returned here, it will be passed as the `context`
+            // argument to your subscription resolvers.
+        }
+    }, {
+        // This is the `httpServer` we created in a previous step.
+        server: httpServer,
+        // This `server` is the instance returned from `new ApolloServer`.
+        path: server.graphqlPath,
+    });
+
+    // More required logic for integrating with Express
+    await server.start();
+    server.applyMiddleware({
+        app,
+
+        // By default, apollo-server hosts its GraphQL endpoint at the
+        // server root. However, *other* Apollo Server packages host it at
+        // /graphql. Optionally provide this to match apollo-server.
+        path: '/',
+    });
+
+    // Modified server startup
+    await new Promise(resolve => httpServer.listen({ port: 4000 }, resolve));
+    console.log(`🚀 Server ready at http://localhost:4000${server.graphqlPath}`);
+})(typeDefs, resolvers);
 
 
 // Notes:
